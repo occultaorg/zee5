@@ -1,103 +1,118 @@
+#include <httplib.h>
 #include <iostream>
 #include <fstream>
-#include <vector>
-#include <string>
 #include <nlohmann/json.hpp>
 #include "zee_functions.hpp"
 
 using json = nlohmann::json;
 
-// Function to get the Zee5 cookie, with caching
-std::string getCookieZee5(const std::string& userAgent, const std::string& channelId) {
-    // Basic caching mechanism
-    std::string cacheFile = "cookie_cache_" + channelId + ".txt";
-    std::ifstream inFile(cacheFile);
-    if (inFile.is_open()) {
-        std::string cookie;
-        std::getline(inFile, cookie);
-        inFile.close();
-        // Here you might want to add expiry logic
-        return cookie;
-    }
+int main() {
+    httplib::Server svr;
 
-    std::string cookie = generateCookieZee5(userAgent, channelId);
-    std::ofstream outFile(cacheFile);
-    if (outFile.is_open()) {
-        outFile << cookie;
-        outFile.close();
-    }
-    return cookie;
-}
-
-int main(int argc, char* argv[]) {
-    std::vector<std::string> countries;
-    std::vector<std::string> languages;
-
-    // Simple argument parsing
-    for (int i = 1; i < argc; ++i) {
-        std::string arg = argv[i];
-        if (arg.rfind("--country=", 0) == 0) {
-            countries.push_back(arg.substr(10));
-        } else if (arg.rfind("--language=", 0) == 0) {
-            languages.push_back(arg.substr(11));
-        }
-    }
-
-    std::ifstream f("../../data.json");
-    if (!f.is_open()) {
-        std::cerr << "Could not open data.json" << std::endl;
-        return 1;
-    }
-    json data = json::parse(f);
-
-    std::ofstream playlistFile("playlist.m3u");
-    if (!playlistFile.is_open()) {
-        std::cerr << "Could not create playlist.m3u" << std::endl;
-        return 1;
-    }
-
-    playlistFile << "#EXTM3U" << std::endl;
-    playlistFile << "#https://github.com/yuvraj824/zee5" << std::endl << std::endl;
-
-    std::string userAgent = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/139.0.0.0 Safari/537.36";
-
-    for (const auto& channel : data["data"]) {
-        try {
-            std::string channelId = channel.value("id", "");
-            if (channelId.empty()) {
-                continue;
+    svr.Get("/playlist", [](const httplib::Request& req, httplib::Response& res) {
+        std::vector<std::string> countries;
+        if (req.has_param("country")) {
+            std::string country_param = req.get_param_value("country");
+            // Split by comma
+            std::stringstream ss(country_param);
+            std::string item;
+            while (std::getline(ss, item, ',')) {
+                countries.push_back(item);
             }
-            std::string cookie = getCookieZee5(userAgent, channelId);
+        }
 
+        std::vector<std::string> languages;
+        if (req.has_param("language")) {
+            std::string language_param = req.get_param_value("language");
+            // Split by comma
+            std::stringstream ss(language_param);
+            std::string item;
+            while (std::getline(ss, item, ',')) {
+                languages.push_back(item);
+            }
+        }
+
+        std::ifstream f("../../data.json");
+        if (!f.is_open()) {
+            res.status = 500;
+            res.set_content("Could not open data.json", "text/plain");
+            return;
+        }
+        json data = json::parse(f);
+
+        std::stringstream playlist;
+        playlist << "#EXTM3U" << std::endl;
+        playlist << "#https://github.com/yuvraj824/zee5" << std::endl << std::endl;
+
+        for (const auto& channel : data["data"]) {
             bool countryMatch = countries.empty();
-        for (const auto& c : countries) {
-            if (channel["country"] == c) {
-                countryMatch = true;
-                break;
+            for (const auto& c : countries) {
+                if (channel["country"] == c) {
+                    countryMatch = true;
+                    break;
+                }
             }
-        }
 
-        bool languageMatch = languages.empty();
-        for (const auto& l : languages) {
-            if (channel["language"] == l) {
-                languageMatch = true;
-                break;
+            bool languageMatch = languages.empty();
+            for (const auto& l : languages) {
+                if (channel["language"] == l) {
+                    languageMatch = true;
+                    break;
+                }
             }
-        }
 
-        if (countryMatch && languageMatch) {
-            playlistFile << "#EXTINF:-1 tvg-id=\"" << channel.value("id", "") << "\" tvg-country=\"" << channel.value("country", "")
+            if (countryMatch && languageMatch) {
+                playlist << "#EXTINF:-1 tvg-id=\"" << channel.value("id", "") << "\" tvg-country=\"" << channel.value("country", "")
                          << "\" tvg-language=\"" << channel.value("language", "") << "\" tvg-name=\"" << channel.value("name", "")
                          << "\" tvg-logo=\"" << channel.value("logo", "") << "\" group-title=\"" << channel.value("genre", "")
                          << "\", " << channel.value("name", "") << std::endl;
-            playlistFile << channel.value("url", "") << "?" << cookie << std::endl;
+                playlist << "http://" << req.local_addr << ":" << req.local_port << "/stream?id=" << channel.value("id", "") << std::endl;
+            }
         }
+
+        res.set_content(playlist.str(), "audio/x-mpegurl");
+    });
+
+    svr.Get("/stream", [](const httplib::Request& req, httplib::Response& res) {
+        if (!req.has_param("id")) {
+            res.status = 400;
+            res.set_content("Channel ID not found in query parameter.", "text/plain");
+            return;
+        }
+        std::string channelId = req.get_param_value("id");
+        std::string userAgent = req.get_header_value("User-Agent");
+        if (userAgent.empty()) {
+            userAgent = "Mozilla/5.0";
+        }
+
+        try {
+            std::string cookie = generateCookieZee5(userAgent, channelId);
+
+            std::ifstream f("../../data.json");
+            if (!f.is_open()) {
+                res.status = 500;
+                res.set_content("Could not open data.json", "text/plain");
+                return;
+            }
+            json data = json::parse(f);
+
+            for (const auto& channel : data["data"]) {
+                if (channel["id"] == channelId) {
+                    std::string streamUrl = channel.value("url", "");
+                    res.set_redirect((streamUrl + "?" + cookie).c_str());
+                    return;
+                }
+            }
+
+            res.status = 404;
+            res.set_content("Channel not found.", "text/plain");
         } catch (const ZeeException& e) {
-            std::cerr << "Error processing channel " << channel.value("id", "") << ": " << e.what() << std::endl;
+            res.status = 500;
+            res.set_content(e.what(), "text/plain");
         }
-    }
+    });
 
-    std::cout << "Playlist generated successfully." << std::endl;
-
+    std::cout << "Starting server on port 8080..." << std::endl;
+    svr.listen("0.0.0.0", 8080);
     return 0;
 }
