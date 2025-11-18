@@ -81,13 +81,13 @@ std::string fetchPlatformToken() {
         throw ZeeException("Failed to fetch platform token: " + r.text);
     }
 
-    std::regex re("<script id=\"__NEXT_DATA__\" type=\"application/json\">([^<]+)</script>");
+    std::regex re("window\\.appConfig=({.*?});");
     std::smatch match;
     if (std::regex_search(r.text, match, re) && match.size() > 1) {
         try {
             auto json_response = nlohmann::json::parse(match[1].str());
-            if (json_response.contains("props") && json_response["props"].contains("pageProps") && json_response["props"]["pageProps"].contains("gwapiPlatformToken")) {
-                return json_response["props"]["pageProps"]["gwapiPlatformToken"];
+            if (json_response.contains("gwapiPlatformToken")) {
+                return json_response["gwapiPlatformToken"];
             }
         } catch (const nlohmann::json::parse_error& e) {
             throw ZeeException("Failed to parse JSON for platform token: " + std::string(e.what()));
